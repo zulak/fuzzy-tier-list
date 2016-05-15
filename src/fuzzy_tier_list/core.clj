@@ -6,79 +6,72 @@
 (defn- format-card [{:strs [cost score name rarity]}]
   (format "[%d] %s (%s) - %d" cost name (first rarity) score))
 
-(defn- handle-input [ch]
-  (cond
-    (= ch :enter) [:clear]
-    (= ch :backspace) [:backspace]
-    (keyword? ch) nil
-    (= ch \) [:exit]
-    :else [:print ch]))
-
-(defn- draw [state]
-  (let [term (:term @state)
-        [x y] (:pos @state)
-        query (apply str (:query @state))]
+(defn- draw [state term]
+  (let [query (apply str (:query state))
+        results (when (>= (count query) 3)
+                  (take 5 (db/fuzzy-search (:cards state) query)))]
     (t/clear term)
-    (t/put-string term query)
-    (when (>= (count query) 3)
-      (let [results (take 5 (db/fuzzy-search (:cards @state) query))]
-        (loop [res results
-               line 2]
-          (when (seq res)
-            (do
-              (t/move-cursor term 0 line)
-              (t/put-string term (format-card (first res)))
-              (recur (rest res) (inc line)))))
-        (t/move-cursor term x y)))))
+    (loop [res results
+           line 2]
+      (when (seq res)
+        (do
+          (t/move-cursor term 0 line)
+          (t/put-string term (format-card (first res)))
+          (recur (rest res) (inc line)))))
+    (t/move-cursor term 0 0)
+    (t/put-string term query)))
 
 (defn- on-enter [state]
-  (let [term (:term @state)
-        cards (:cards @state)]
-    (reset! state {:cards cards
-                   :term term
-                   :pos [0 0]
-                   :query []
-                   :continue true})))
+  (assoc state :query []))
 
-(defn- on-char [state ch]
-  (let [term (:term @state)]
-    (swap! state (fn [s]
-                   (let [[x y] (:pos s)]
-                     (->
-                      (assoc s :query (conj (:query s) ch))
-                      (assoc :pos [(+ 1 x) y])))))))
+(defn- on-char [state input]
+  (update state :query #(conj % input)))
 
 (defn- on-backspace [state]
-  (let [term (:term @state)
-        [x y] (:pos @state)
-        query (:query @state)]
-    (when (> x 0)
-      (swap! state (fn [s]
-                     (-> (assoc s :pos [(- x 1) y])
-                         (update :query pop))
-                     )))))
+  (if-not (empty? (:query state))
+    (update state :query pop)
+    state))
 
-(defn run [term card-db]
-  (let [state (atom {:cards card-db
-                     :term term
-                     :pos [0 0]
-                     :query []
-                     :continue true})]
-    (while (:continue @state)
-      (do
-        (let [in (handle-input (t/get-key-blocking term))]
-          (condp = (first in)
-            :clear (on-enter state)
-            :backspace (on-backspace state)
-            :print (on-char state (second in))
-            :exit (swap! state #(assoc % :continue nil))
-            ))
-        (draw state)
-        ))))
+(defn- on-exit [state]
+  (assoc state :continue false))
+
+(defn- new-state []
+  {:cards (db/load-card-db)
+   :query []
+   :continue true
+   :input nil})
+
+(defn get-input [state term]
+  (assoc state :input (t/get-key-blocking term)))
+
+(defn handle-input [state input]
+  (letfn [(is-printable? [x]
+            (and (char? x) (some #{(int x)} (range 32 127))))]
+    (cond
+      (= input :enter) (on-enter state)
+      (= input :backspace) (on-backspace state)
+      (is-printable? input) (on-char state input)
+      :else state)))
+
+(defn run-loop
+  [term state]
+  (loop [state state]
+    (when (:continue state)
+      (draw state term)
+      (let [input (:input state)]
+        (if (nil? input)
+          (recur (get-input state term))
+          (recur (handle-input (dissoc state :input) input)))))))
+
+(defn main
+  [term-type block?]
+  (letfn [(go []
+              (let [term (t/get-terminal term-type)]
+                (t/in-terminal term
+                               (run-loop term (new-state)))))]
+    (if block?
+      (go)
+      (future (go)))))
 
 (defn -main []
-  (let [term (t/get-terminal :text)
-        cards (db/load-card-db)]
-    (t/in-terminal term
-                   (run term cards)))
-  (println "And done."))
+  (main :text true))
