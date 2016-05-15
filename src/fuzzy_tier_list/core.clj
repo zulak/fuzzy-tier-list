@@ -1,5 +1,5 @@
 (ns fuzzy-tier-list.core
-  (:require [fuzzy-matching.db :as db]
+  (:require [fuzzy-tier-list.db :as db]
             [lanterna.terminal :as t])
   (:gen-class))
 
